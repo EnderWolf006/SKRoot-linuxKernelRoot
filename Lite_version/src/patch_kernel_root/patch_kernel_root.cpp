@@ -222,6 +222,7 @@ int main(int argc, char* argv[]) {
 	std::cout << "#是否需要立即写入修改到文件？（1需要；2不需要）：" << std::endl;
 	std::cin >> need_write_modify_in_file;
 	if (need_write_modify_in_file == 1) {
+		std::cout << "#正在写入，请稍后..." << std::endl;
 		write_all_patch(file_path, vec_patch_bytes_data);
 	}
 	system("pause");
