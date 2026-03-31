@@ -79,7 +79,7 @@ PatchKernelResult patch_kernel_handler(const std::vector<char>& file_buf, size_t
 	PatchKernelResult r;
 	if (kernel_ver.is_kernel_version_less("6.1.0")) {
 		SymbolRegion next_empty_region = { 0x200, 0x300 };
-		if (sym.__cfi_check.offset) next_empty_region = sym.__cfi_check;
+		if (sym.__cfi_check.offset && sym.__cfi_check.size > next_empty_region.size) next_empty_region = sym.__cfi_check;
 		auto start_b_location = next_empty_region.offset;
 		PATCH_AND_CONSUME(next_empty_region, 4);
 		r.root_key_start = next_empty_region.offset;
