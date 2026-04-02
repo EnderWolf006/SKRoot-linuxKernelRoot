@@ -92,12 +92,14 @@ PatchKernelResult patch_kernel_handler(const std::vector<char>& file_buf, size_t
 		PATCH_AND_CONSUME(next_empty_region, patchAuditLogStart.patch_audit_log_start(next_empty_region, current_avc_check_bl_func, vec_patch_bytes_data));
 		auto end_b_location = next_empty_region.offset;
 		patchBase.patch_jump(start_b_location, end_b_location, vec_patch_bytes_data);
-	} else if (sym.die.offset && sym.arm64_notify_die.offset && sym.__drm_printfn_coredump.offset) {
+	} else if (sym.die.offset && sym.__drm_puts_coredump.offset && sym.__drm_printfn_coredump.offset) {
+		PATCH_AND_CONSUME(sym.__drm_printfn_coredump, patch_ret_cmd(file_buf, sym.__drm_printfn_coredump.offset, vec_patch_bytes_data));
+		PATCH_AND_CONSUME(sym.__drm_puts_coredump, patch_ret_cmd(file_buf, sym.__drm_puts_coredump.offset, vec_patch_bytes_data));
 		r.root_key_start = sym.die.offset;
 		PATCH_AND_CONSUME(sym.die, patchDoExecve.patch_do_execve(sym.die, cred_offset, seccomp_offset, vec_patch_bytes_data));
 		PATCH_AND_CONSUME(sym.die, patchFilldir64.patch_filldir64_root_key_guide(r.root_key_start, sym.die, vec_patch_bytes_data));
-		PATCH_AND_CONSUME(sym.die, patchFilldir64.patch_jump(sym.die.offset, sym.arm64_notify_die.offset, vec_patch_bytes_data));
-		PATCH_AND_CONSUME(sym.arm64_notify_die, patchFilldir64.patch_filldir64_core(sym.arm64_notify_die, vec_patch_bytes_data));
+		PATCH_AND_CONSUME(sym.die, patchFilldir64.patch_jump(sym.die.offset, sym.__drm_puts_coredump.offset, vec_patch_bytes_data));
+		PATCH_AND_CONSUME(sym.__drm_puts_coredump, patchFilldir64.patch_filldir64_core(sym.__drm_puts_coredump, vec_patch_bytes_data));
 		auto current_avc_check_bl_func = sym.__drm_printfn_coredump.offset;
 		PATCH_AND_CONSUME(sym.__drm_printfn_coredump, patchCurrentAvcCheck.patch_current_avc_check_bl_func(sym.__drm_printfn_coredump, cred_offset, vec_patch_bytes_data));
 		PATCH_AND_CONSUME(sym.__drm_printfn_coredump, patchAvcDenied.patch_avc_denied(sym.__drm_printfn_coredump, current_avc_check_bl_func, vec_patch_bytes_data));
@@ -161,6 +163,7 @@ int main(int argc, char* argv[]) {
 		return 0;
 	}
 	KernelSymbolOffset sym = symbol_analyze.get_symbol_offset();
+	uint64_t anchor_off = sym.die.offset;
 
 	std::string t_mode_name;
 	size_t cred_offset  = 0;
