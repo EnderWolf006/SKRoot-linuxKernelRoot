@@ -9,6 +9,14 @@
 
 #include "3rdparty/find_mrs_register.h"
 #include "3rdparty/find_imm_register_offset.h"
+#include "3rdparty/find_adrp_target.h"
+
+struct PatchKernelOffset {
+	size_t cred_offset = 0;
+	size_t cred_uid_offset = 0;
+	size_t seccomp_offset = 0;
+	uint64_t huawei_kti_addr = 0;
+};
 
 struct PatchKernelResult {
 	bool patched = false;
@@ -19,9 +27,15 @@ bool check_file_path(const char* file_path) {
 	return std::filesystem::path(file_path).extension() != ".img";
 }
 
-bool parser_cred_offset(const std::vector<char>& file_buf, const SymbolRegion &symbol, std::string& mode_name, size_t& cred_offset) {
+bool parser_cred_offset(const std::vector<char>& file_buf, const SymbolRegion &symbol, size_t& cred_offset) {
 	using namespace a64_find_mrs_register;
-	return find_current_task_next_register_offset(file_buf, symbol.offset, symbol.offset + symbol.size, mode_name, cred_offset);
+	std::vector<track_reg_info>track_info;
+	if (!find_current_task_next_register_offset(file_buf, symbol.offset, symbol.offset + symbol.size, track_info)) return false;
+	cred_offset = 0;
+	for (auto& t : track_info) {
+		if (t.load_offset > 0x400) { cred_offset = t.load_offset; break; }
+	}
+	return cred_offset > 0;
 }
 
 bool parse_cred_uid_offset(const std::vector<char>& file_buf, const SymbolRegion& symbol, size_t cred_offset, size_t& cred_uid_offset) {
@@ -45,9 +59,22 @@ bool parse_cred_uid_offset(const std::vector<char>& file_buf, const SymbolRegion
 	return cred_uid_offset != 0;
 }
 
-bool parser_seccomp_offset(const std::vector<char>& file_buf, const SymbolRegion& symbol, std::string& mode_name, size_t& seccomp_offset) {
+bool parser_seccomp_offset(const std::vector<char>& file_buf, const SymbolRegion& symbol, size_t& seccomp_offset) {
 	using namespace a64_find_mrs_register;
-	return find_current_task_next_register_offset(file_buf, symbol.offset, symbol.offset + symbol.size, mode_name, seccomp_offset);
+	std::vector<track_reg_info>track_info;
+	if (!find_current_task_next_register_offset(file_buf, symbol.offset, symbol.offset + symbol.size, track_info)) return false;
+	seccomp_offset = 0;
+	for (auto& t : track_info) {
+		if (t.load_offset > 0x400) { seccomp_offset = t.load_offset; break; }
+	}
+	return seccomp_offset > 0;
+}
+
+bool parser_huawei_kti_addr(const std::vector<char>& file_buf, const SymbolRegion& symbol, uint64_t& kti_addr) {
+	using namespace a64_find_adrp_target;
+	if (symbol.size == 0) return false;
+	if (!find_adrp_target(file_buf, symbol.offset, symbol.offset + symbol.size, kti_addr)) return false;
+	return kti_addr > 0;
 }
 
 void cfi_bypass(const std::vector<char>& file_buf, KernelSymbolOffset &sym, std::vector<patch_bytes_data>& vec_patch_bytes_data) {
@@ -66,9 +93,9 @@ void huawei_bypass(const std::vector<char>& file_buf, KernelSymbolOffset &sym, s
 	patch_ret_0_cmd(file_buf, sym.hkip_check_xid_root, vec_patch_bytes_data);
 }
 
-PatchKernelResult patch_kernel_handler(const std::vector<char>& file_buf, size_t cred_offset, size_t cred_uid_offset, size_t seccomp_offset, KernelSymbolOffset& sym, std::vector<patch_bytes_data>& vec_patch_bytes_data) {
+PatchKernelResult patch_kernel_handler(const std::vector<char>& file_buf, const PatchKernelOffset& off, KernelSymbolOffset& sym, std::vector<patch_bytes_data>& vec_patch_bytes_data) {
 	KernelVersionParser kernel_ver(file_buf);
-	PatchBase patchBase(file_buf, cred_uid_offset);
+	PatchBase patchBase(file_buf, off.cred_uid_offset, { .kti_addr = off.huawei_kti_addr });
 	PatchDoExecve patchDoExecve(patchBase, sym);
 	PatchCurrentAvcCheck patchCurrentAvcCheck(patchBase);
 	PatchAvcDenied patchAvcDenied(patchBase, sym.avc_denied);
@@ -83,11 +110,11 @@ PatchKernelResult patch_kernel_handler(const std::vector<char>& file_buf, size_t
 		auto start_b_location = next_empty_region.offset;
 		PATCH_AND_CONSUME(next_empty_region, 4);
 		r.root_key_start = next_empty_region.offset;
-		PATCH_AND_CONSUME(next_empty_region, patchDoExecve.patch_do_execve(next_empty_region, cred_offset, seccomp_offset, vec_patch_bytes_data));
+		PATCH_AND_CONSUME(next_empty_region, patchDoExecve.patch_do_execve(next_empty_region, off.cred_offset, off.seccomp_offset, vec_patch_bytes_data));
 		PATCH_AND_CONSUME(next_empty_region, patchFilldir64.patch_filldir64_root_key_guide(r.root_key_start, next_empty_region, vec_patch_bytes_data));
 		PATCH_AND_CONSUME(next_empty_region, patchFilldir64.patch_filldir64_core(next_empty_region, vec_patch_bytes_data));
 		auto current_avc_check_bl_func = next_empty_region.offset;
-		PATCH_AND_CONSUME(next_empty_region, patchCurrentAvcCheck.patch_current_avc_check_bl_func(next_empty_region, cred_offset, vec_patch_bytes_data));
+		PATCH_AND_CONSUME(next_empty_region, patchCurrentAvcCheck.patch_current_avc_check_bl_func(next_empty_region, off.cred_offset, vec_patch_bytes_data));
 		PATCH_AND_CONSUME(next_empty_region, patchAvcDenied.patch_avc_denied(next_empty_region, current_avc_check_bl_func, vec_patch_bytes_data));
 		PATCH_AND_CONSUME(next_empty_region, patchAuditLogStart.patch_audit_log_start(next_empty_region, current_avc_check_bl_func, vec_patch_bytes_data));
 		auto end_b_location = next_empty_region.offset;
@@ -96,12 +123,12 @@ PatchKernelResult patch_kernel_handler(const std::vector<char>& file_buf, size_t
 		PATCH_AND_CONSUME(sym.__drm_printfn_coredump, patch_ret_cmd(file_buf, sym.__drm_printfn_coredump.offset, vec_patch_bytes_data));
 		PATCH_AND_CONSUME(sym.__drm_puts_coredump, patch_ret_cmd(file_buf, sym.__drm_puts_coredump.offset, vec_patch_bytes_data));
 		r.root_key_start = sym.die.offset;
-		PATCH_AND_CONSUME(sym.die, patchDoExecve.patch_do_execve(sym.die, cred_offset, seccomp_offset, vec_patch_bytes_data));
+		PATCH_AND_CONSUME(sym.die, patchDoExecve.patch_do_execve(sym.die, off.cred_offset, off.seccomp_offset, vec_patch_bytes_data));
 		PATCH_AND_CONSUME(sym.die, patchFilldir64.patch_filldir64_root_key_guide(r.root_key_start, sym.die, vec_patch_bytes_data));
 		PATCH_AND_CONSUME(sym.die, patchFilldir64.patch_jump(sym.die.offset, sym.__drm_puts_coredump.offset, vec_patch_bytes_data));
 		PATCH_AND_CONSUME(sym.__drm_puts_coredump, patchFilldir64.patch_filldir64_core(sym.__drm_puts_coredump, vec_patch_bytes_data));
 		auto current_avc_check_bl_func = sym.__drm_printfn_coredump.offset;
-		PATCH_AND_CONSUME(sym.__drm_printfn_coredump, patchCurrentAvcCheck.patch_current_avc_check_bl_func(sym.__drm_printfn_coredump, cred_offset, vec_patch_bytes_data));
+		PATCH_AND_CONSUME(sym.__drm_printfn_coredump, patchCurrentAvcCheck.patch_current_avc_check_bl_func(sym.__drm_printfn_coredump, off.cred_offset, vec_patch_bytes_data));
 		PATCH_AND_CONSUME(sym.__drm_printfn_coredump, patchAvcDenied.patch_avc_denied(sym.__drm_printfn_coredump, current_avc_check_bl_func, vec_patch_bytes_data));
 		PATCH_AND_CONSUME(sym.__drm_printfn_coredump, patchAuditLogStart.patch_audit_log_start(sym.__drm_printfn_coredump, current_avc_check_bl_func, vec_patch_bytes_data));
 	} else {
@@ -165,39 +192,37 @@ int main(int argc, char* argv[]) {
 	KernelSymbolOffset sym = symbol_analyze.get_symbol_offset();
 	uint64_t anchor_off = sym.die.offset;
 
-	std::string t_mode_name;
-	size_t cred_offset  = 0;
-	size_t cred_uid_offset = 0;
-	size_t seccomp_offset = 0;
-	if (!parser_cred_offset(file_buf, sym.sys_getuid, t_mode_name, cred_offset)) {
+	PatchKernelOffset off;
+	if (!parser_cred_offset(file_buf, sym.sys_getuid, off.cred_offset)) {
 		std::cout << "Failed to parse cred offset" << std::endl;
 		system("pause");
 		return 0;
 	}
-	std::cout << "parse cred offset mode name: " << t_mode_name  << std::endl;
 
-	if (!parse_cred_uid_offset(file_buf, sym.sys_getuid, cred_offset, cred_uid_offset)) {
+	if (!parse_cred_uid_offset(file_buf, sym.sys_getuid, off.cred_offset, off.cred_uid_offset)) {
 		std::cout << "Failed to parse cred uid offset" << std::endl;
 		system("pause");
 		return 0;
 	}
-	std::cout << "cred uid offset:" << cred_uid_offset << std::endl;
+	std::cout << "cred uid offset:" << off.cred_uid_offset << std::endl;
 
-	if (!parser_seccomp_offset(file_buf, sym.prctl_get_seccomp, t_mode_name, seccomp_offset)) {
+	if (!parser_seccomp_offset(file_buf, sym.prctl_get_seccomp, off.seccomp_offset)) {
 		std::cout << "Failed to parse seccomp offset" << std::endl;
 		system("pause");
 		return 0;
 	}
-	std::cout << "parse seccomp offset mode name: " << t_mode_name << std::endl;
-	std::cout << "cred offset:" << cred_offset << std::endl;
-	std::cout << "seccomp offset:" << seccomp_offset << std::endl;
+	std::cout << "cred offset:" << off.cred_offset << std::endl;
+	std::cout << "seccomp offset:" << off.seccomp_offset << std::endl;
+
+	parser_huawei_kti_addr(file_buf, sym.kti_randomize_init, off.huawei_kti_addr);
+	if(off.huawei_kti_addr) std::cout << "kti addr:" << off.huawei_kti_addr << std::endl;
 
 	std::vector<patch_bytes_data> vec_patch_bytes_data;
 	cfi_bypass(file_buf, sym, vec_patch_bytes_data);
 	huawei_bypass(file_buf, sym, vec_patch_bytes_data);
 
 	size_t first_hook_start = 0;
-	PatchKernelResult pr = patch_kernel_handler(file_buf, cred_offset, cred_uid_offset, seccomp_offset, sym, vec_patch_bytes_data);
+	PatchKernelResult pr = patch_kernel_handler(file_buf, off, sym, vec_patch_bytes_data);
 	if (!pr.patched) {
 		std::cout << "Failed to find hook start addr" << std::endl;
 		system("pause");
